@@ -18,11 +18,17 @@ FONT_SIZE = 11.0
 
 def convert_docx_to_pdf(docx_path, pdf_path):
     outdir = os.path.dirname(pdf_path)
-    subprocess.run(
-        [SOFFICE, '--headless', '--convert-to', 'pdf', '--outdir', outdir, docx_path],
-        check=True,
-        capture_output=True,
-    )
+    # One headless LibreOffice per user profile: a second concurrent convert
+    # against the default profile exits without writing the PDF, and the caller
+    # then fails on a file that was never created. Same fix as build_pdf.py.
+    with tempfile.TemporaryDirectory(prefix='soffice-profile-') as profile:
+        subprocess.run(
+            [SOFFICE,
+             '-env:UserInstallation=file://' + profile,
+             '--headless', '--convert-to', 'pdf', '--outdir', outdir, docx_path],
+            check=True,
+            capture_output=True,
+        )
     generated = os.path.join(
         outdir, os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
     )

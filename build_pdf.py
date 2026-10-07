@@ -59,6 +59,7 @@ SECTION_TITLES = {
     'CORE TECHNICAL SKILLS',
     'PROFESSIONAL EXPERIENCE',
     'FREELANCE & PERSONAL PROJECTS — PART-TIME / OUTSIDE FULL-TIME EMPLOYMENT',
+    'PERSONAL PROJECTS',
     'EDUCATION & ACADEMIC TRAINING',
     'EDUCATION',
     'LANGUAGES',
@@ -74,6 +75,9 @@ EDUCATION_SECTIONS = {
 }
 
 FREELANCE_SECTION = 'Freelance & Personal Projects — Part-Time / Outside Full-Time Employment'
+# A top-level section of its own (2026-10-07). As a sub-heading inside PROFESSIONAL EXPERIENCE,
+# an ATS could read ikite.fyi's '2023 – Present' as the current employer.
+PROJECTS_SECTION = 'PERSONAL PROJECTS'
 FREELANCE_MARKER = 'freelance'
 RELOCATION_LINE = (
     'Seeking relocation to the Netherlands for a Tech Lead role with an '
@@ -241,6 +245,7 @@ def parse_readme(path):
         'tagline': None,
         'contact_bits': [],
         'linkedin': None,
+        'links': [],  # further header links after LinkedIn, e.g. GitHub (2026-10-07)
         'sections': [],
     }
     current = None
@@ -354,6 +359,14 @@ def parse_readme(path):
             i += 1
             continue
 
+        # Any further link-only line in the header (GitHub, a website) joins the contact line.
+        if stripped.startswith('[') and '](' in stripped and not data['sections']:
+            link = extract_markdown_link(stripped)
+            if link:
+                data['links'].append(link)
+                i += 1
+                continue
+
         skill = parse_skill_line(strip_bullet_prefix(stripped))
         if skill and current and current_title_upper() in SKILLS_SECTIONS:
             current['blocks'].append({'type': 'skill', 'label': skill[0], 'rest': skill[1]})
@@ -370,6 +383,7 @@ def parse_readme(path):
             if current and current_title_upper() in {
                 'PROFESSIONAL EXPERIENCE',
                 FREELANCE_SECTION.upper(),
+                PROJECTS_SECTION,
             } and (stripped.endswith('**') or '\t' in stripped):
                 company, dates = parse_job_header(stripped)
                 role = None
@@ -474,6 +488,7 @@ def filter_cv_data(data, exclude_paragraphs=(), exclude_sections=()):
         'tagline': data.get('tagline'),
         'contact_bits': list(data['contact_bits']),
         'linkedin': data['linkedin'],
+        'links': list(data.get('links', [])),
         'sections': [],
     }
     for section in data['sections']:
@@ -589,7 +604,9 @@ class CvBuilder:
             size=self.font_name,
             bold=True,
             color=ACCENT,
-            tracking=40,
+            # 1pt (was 2pt): pdfminer-style parsers split letters spaced more than
+            # ~0.1 x font size apart, and 2pt was borderline at this size (2026-10-07).
+            tracking=20,
         )
 
     def tagline_line(self, text):
@@ -677,7 +694,9 @@ class CvBuilder:
             size=self.font_section,
             bold=True,
             color=ACCENT,
-            tracking=40,
+            # 0.5pt (was 2pt): at 2pt pdfminer-style parsers read 'P R O F E S S I O N A L',
+            # which can stop an ATS recognising its sections (2026-10-07).
+            tracking=10,
         )
         self.add_bottom_border(p)
 
@@ -686,8 +705,9 @@ class CvBuilder:
         self.set_space(p, 0.9, 0.9)
         r = p.add_run(label + ': ')
         style_run(r, FONT_BODY, size=self.font_body, bold=True, color=ACCENT)
-        r2 = p.add_run(rest)
-        style_run(r2, FONT_BODY, size=self.font_body, color=BLACK)
+        # Rich text, so a tailored CV can bold a key skill inside the list (**Java**);
+        # a plain run printed the asterisks literally (SQLink, 2026-10-07).
+        self.append_rich_text(p, rest, self.font_body, color=BLACK)
 
     def dated_line(self, title, dates, title_font=None, date_bold=True, page_break_before=False):
         if title_font is None:
@@ -726,10 +746,15 @@ class CvBuilder:
             style_run(rs, FONT_BODY, size=self.font_role, italic=True, color=GREY)
 
     def bullet(self, segments):
-        p = self.justify(self.doc.add_paragraph(style='List Bullet'))
+        # A literal U+2022 in the body font (2026-10-07). Word's 'List Bullet' numbering drew a
+        # Symbol-font glyph that extracts as U+F0B7, which some ATS parsers show as junk.
+        p = self.justify(self.doc.add_paragraph())
         self.set_space(p, 0.35, 0.35)
         p.paragraph_format.left_indent = Inches(0.18)
         p.paragraph_format.first_line_indent = Inches(-0.12)
+        p.paragraph_format.tab_stops.add_tab_stop(Inches(0.18))
+        mark = p.add_run('\u2022\t')
+        style_run(mark, FONT_BODY, size=self.font_body, color=BLACK)
         for text, bold in segments:
             self.append_rich_text(p, text, self.font_body, bold=bold, color=BLACK)
 
@@ -756,8 +781,8 @@ class CvBuilder:
         self.set_space(p, 0, after)
         self.append_rich_text(p, text, self.font_body, bold=False, color=BLACK)
 
-    def contact_details_line(self, parts, linkedin=None):
-        """Single centered contact line: text parts and optional LinkedIn hyperlink."""
+    def contact_details_line(self, parts, linkedin=None, links=()):
+        """Single centered contact line: text parts, then LinkedIn and any further links."""
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self.set_space(p, 0, 5)
@@ -786,8 +811,21 @@ class CvBuilder:
             self.append_hyperlink(
                 p, display, url, self.font_contact, bold=False, color=ACCENT
             )
+        for display, url in links:
+            if parts or linkedin:
+                r = p.add_run(sep)
+                style_run(r, FONT_BODY, size=self.font_contact, color=GREY)
+            self.append_hyperlink(
+                p, display, url, self.font_contact, bold=False, color=ACCENT
+            )
 
     def build_from_data(self, data, phone):
+        # LibreOffice carries these into the PDF's Author/Title; the python-docx default
+        # author 'python-docx' is what some ATSs display (2026-10-07).
+        props = self.doc.core_properties
+        props.author = props.last_modified_by = data['name'].title()
+        props.title = data['name'].title() + ' - CV'
+        props.comments = ''
         self.name_heading(data['name'])
         if data.get('tagline'):
             self.tagline_line(data['tagline'])
@@ -830,7 +868,7 @@ class CvBuilder:
             part for part in parts
             if 'linkedin.com' not in part.lower()
         ]
-        self.contact_details_line(parts, linkedin=linkedin)
+        self.contact_details_line(parts, linkedin=linkedin, links=data.get('links', ()))
 
         has_freelance = any(
             section['title'].upper() == FREELANCE_SECTION.upper()
@@ -862,7 +900,7 @@ class CvBuilder:
                             self.bullet(segments)
                 continue
 
-            if title_upper in {'PROFESSIONAL EXPERIENCE', FREELANCE_SECTION.upper()}:
+            if title_upper in {'PROFESSIONAL EXPERIENCE', FREELANCE_SECTION.upper(), PROJECTS_SECTION}:
                 for block in section['blocks']:
                     if block['type'] != 'job':
                         continue
@@ -904,11 +942,20 @@ class CvBuilder:
 
 def convert_docx_to_pdf(docx_path, pdf_path):
     outdir = os.path.dirname(pdf_path)
-    subprocess.run(
-        [SOFFICE, '--headless', '--convert-to', 'pdf', '--outdir', outdir, docx_path],
-        check=True,
-        capture_output=True,
-    )
+    # LibreOffice allows one headless instance per user profile. A second
+    # concurrent convert against the default profile exits without writing
+    # anything, and the caller then dies on pdfinfo with a file that was never
+    # created -- which is what two parallel build_pack.py runs looked like on
+    # 2026-09-17. Give every conversion a throwaway profile so they cannot
+    # collide.
+    with tempfile.TemporaryDirectory(prefix='soffice-profile-') as profile:
+        subprocess.run(
+            [SOFFICE,
+             '-env:UserInstallation=file://' + profile,
+             '--headless', '--convert-to', 'pdf', '--outdir', outdir, docx_path],
+            check=True,
+            capture_output=True,
+        )
     generated = os.path.join(outdir, os.path.splitext(os.path.basename(docx_path))[0] + '.pdf')
     if generated != pdf_path:
         shutil.move(generated, pdf_path)
