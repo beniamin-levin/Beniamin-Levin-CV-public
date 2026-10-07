@@ -65,3 +65,8 @@ Beniamin-Levin-CV.docx
 .DS_Store
 **/.DS_Store
 il-job-application-tracker.md
+
+# Published on purpose (2026-10-07): the base CV PDF WITHOUT the phone number,
+# built by custom-cv-generation-skill.md step 9.2. The phone-bearing
+# Beniamin-Levin-CV.pdf above stays ignored.
+!Beniamin-Levin-CV-public.pdf
