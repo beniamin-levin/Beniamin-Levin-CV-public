@@ -389,6 +389,7 @@ def parse_readme(path):
                 role = None
                 subtitle = None
                 bullets = []
+                trailing = []
                 j = i + 1
                 while j < len(lines):
                     nxt = lines[j].strip()
@@ -402,7 +403,11 @@ def parse_readme(path):
                         j += 1
                         continue
                     if is_italic_line(nxt):
-                        if role is None:
+                        if bullets:
+                            # Italic lines after the bullets render after them, in order. Until
+                            # 2026-10-07 a later italic line silently replaced the subtitle.
+                            trailing.append(strip_md_italic(nxt))
+                        elif role is None:
                             role = strip_md_italic(nxt)
                         else:
                             subtitle = strip_md_italic(nxt)
@@ -418,6 +423,7 @@ def parse_readme(path):
                     'role': role,
                     'subtitle': subtitle,
                     'bullets': bullets,
+                    'trailing': trailing,
                 })
                 i = j
                 continue
@@ -578,8 +584,10 @@ class CvBuilder:
         p.paragraph_format.space_after = Pt(after)
         return p
 
-    def justify(self, p):
-        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    def align_body(self, p):
+        # Left-aligned since 2026-10-07 (was justified): four of eight independent reviews
+        # flagged the rivers justification opened around bold runs and long skills lists.
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
         return p
 
     def add_bottom_border(self, p):
@@ -701,7 +709,7 @@ class CvBuilder:
         self.add_bottom_border(p)
 
     def skill_line(self, label, rest):
-        p = self.justify(self.doc.add_paragraph())
+        p = self.align_body(self.doc.add_paragraph())
         self.set_space(p, 0.9, 0.9)
         r = p.add_run(label + ': ')
         style_run(r, FONT_BODY, size=self.font_body, bold=True, color=ACCENT)
@@ -735,20 +743,29 @@ class CvBuilder:
             company, dates, page_break_before=page_break_before
         )
         if role:
-            pr = self.doc.add_paragraph()
-            self.set_space(pr, 0, 1.2)
-            ri = pr.add_run(role)
-            style_run(ri, FONT_BODY, size=self.font_role, italic=True, color=ACCENT)
+            self.title_line(role, ACCENT)
         if subtitle:
-            ps = self.doc.add_paragraph()
-            self.set_space(ps, 0, 1.2)
-            rs = ps.add_run(subtitle)
-            style_run(rs, FONT_BODY, size=self.font_role, italic=True, color=GREY)
+            self.title_line(subtitle, GREY)
+
+    def title_line(self, text, color, before=0):
+        """An italic job-title line. A TAB before its dates right-aligns them under the
+        company's (2026-10-07): bracketed dates can be stored as part of the title."""
+        p = self.doc.add_paragraph()
+        self.set_space(p, before, 1.2)
+        title, _, dates = text.partition('\t')
+        r = p.add_run(title.strip())
+        style_run(r, FONT_BODY, size=self.font_role, italic=True, color=color)
+        if dates.strip():
+            p.paragraph_format.tab_stops.add_tab_stop(
+                Inches(self.content_w_in), WD_TAB_ALIGNMENT.RIGHT
+            )
+            rd = p.add_run('\t' + dates.strip())
+            style_run(rd, FONT_BODY, size=self.font_role, italic=True, color=color)
 
     def bullet(self, segments):
         # A literal U+2022 in the body font (2026-10-07). Word's 'List Bullet' numbering drew a
         # Symbol-font glyph that extracts as U+F0B7, which some ATS parsers show as junk.
-        p = self.justify(self.doc.add_paragraph())
+        p = self.align_body(self.doc.add_paragraph())
         self.set_space(p, 0.35, 0.35)
         p.paragraph_format.left_indent = Inches(0.18)
         p.paragraph_format.first_line_indent = Inches(-0.12)
@@ -762,7 +779,7 @@ class CvBuilder:
         self.dated_line(inst, dates, title_font=self.font_edu, date_bold=True)
         if not detail:
             return
-        pd = self.justify(self.doc.add_paragraph())
+        pd = self.align_body(self.doc.add_paragraph())
         self.set_space(pd, 0, 2)
         self.append_rich_text(
             pd, detail, self.font_edu_detail, bold=False, color=GREY
@@ -777,47 +794,41 @@ class CvBuilder:
         style_run(r, FONT_BODY, size=self.font_subhead, bold=True, color=ACCENT)
 
     def para(self, text, after=1.5):
-        p = self.justify(self.doc.add_paragraph())
+        p = self.align_body(self.doc.add_paragraph())
         self.set_space(p, 0, after)
         self.append_rich_text(p, text, self.font_body, bold=False, color=BLACK)
 
     def contact_details_line(self, parts, linkedin=None, links=()):
-        """Single centered contact line: text parts, then LinkedIn and any further links."""
+        """Centered contact block: email, phone and links on the first line; location and status on the second."""
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         self.set_space(p, 0, 5)
         sep = '  |  '
-        for idx, part in enumerate(parts):
-            if idx:
-                r = p.add_run(sep)
-                style_run(r, FONT_BODY, size=self.font_contact, color=GREY)
-            if '@' in part:
-                self.append_hyperlink(
-                    p,
-                    part,
-                    f'mailto:{part}',
-                    self.font_contact,
-                    bold=False,
-                    color=ACCENT,
-                )
-            else:
-                r = p.add_run(part)
-                style_run(r, FONT_BODY, size=self.font_contact, color=GREY)
-        if linkedin:
-            display, url = linkedin
-            if parts:
-                r = p.add_run(sep)
-                style_run(r, FONT_BODY, size=self.font_contact, color=GREY)
-            self.append_hyperlink(
-                p, display, url, self.font_contact, bold=False, color=ACCENT
-            )
-        for display, url in links:
-            if parts or linkedin:
-                r = p.add_run(sep)
-                style_run(r, FONT_BODY, size=self.font_contact, color=GREY)
-            self.append_hyperlink(
-                p, display, url, self.font_contact, bold=False, color=ACCENT
-            )
+
+        # Since 2026-10-07 the header also carries citizenship, work arrangement and
+        # availability, which no longer fit on one line with the phone. Ways to reach
+        # him go first, everything else on a line of its own; a header with nothing
+        # but contacts stays a single line.
+        def is_contact(part):
+            return '@' in part or part.startswith('+') or part.replace(' ', '').replace('-', '').isdigit()
+
+        reach = [(part, f'mailto:{part}' if '@' in part else None) for part in parts if is_contact(part)]
+        reach += ([linkedin] if linkedin else []) + list(links)
+        status = [(part, None) for part in parts if not is_contact(part)]
+        for line_no, line in enumerate(line for line in (reach, status) if line):
+            if line_no:
+                p.add_run().add_break()
+            for idx, (display, url) in enumerate(line):
+                if idx:
+                    r = p.add_run(sep)
+                    style_run(r, FONT_BODY, size=self.font_contact, color=GREY)
+                if url:
+                    self.append_hyperlink(
+                        p, display, url, self.font_contact, bold=False, color=ACCENT
+                    )
+                else:
+                    r = p.add_run(display)
+                    style_run(r, FONT_BODY, size=self.font_contact, color=GREY)
 
     def build_from_data(self, data, phone):
         # LibreOffice carries these into the PDF's Author/Title; the python-docx default
@@ -920,6 +931,14 @@ class CvBuilder:
                     )
                     for segments in block['bullets']:
                         self.bullet(segments)
+                    # A dated trailing line is a title, an undated one a note. A dated title right
+                    # above the next company's heading makes poppler read both dates as one column,
+                    # after both titles - which is why Netcracker's two titles sit above its bullets.
+                    for line in block.get('trailing', ()):
+                        if '\t' in line:
+                            self.title_line(line, ACCENT, before=2)
+                        else:
+                            self.title_line(line, GREY, before=1.5)
                 continue
 
             if title_upper in EDUCATION_SECTIONS:
